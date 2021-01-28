@@ -55,10 +55,15 @@ func (m *Map) Add(keys ...string) {
 	sort.Ints(m.keys)
 }
 
+// 节点是否为 0
+func (m *Map) IsEmpty() bool {
+	return len(m.keys) == 0
+}
+
 // 由缓存 key 选择真实节点
 func (m *Map) Get(key string) string {
 	// 没有节点
-	if len(m.keys) == 0 {
+	if m.IsEmpty() {
 		return ""
 	}
 

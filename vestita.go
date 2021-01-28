@@ -6,6 +6,17 @@ import (
 	"sync"
 )
 
+/*
+缓存处理流程：
+                          是
+接收 key ---> 检查是否被缓存 ---> 返回缓存值 ⑴
+                | 否                      是
+                |---> 是否应当从远程节点获取 ---> HTTP 客户端访问远程节点 ---> 成功？ ---> 返回缓存值 ⑵
+                            | 否										否 |
+                            |---> 本地节点处理 ⑶						  <--- |
+									|---> 调用`回调函数`，获取值并添加到缓存 ---> 返回缓存值
+*/
+
 // 负责与外部交互，控制缓存存储和获取
 // 获取缓存接口
 type Getter interface {
@@ -32,6 +43,8 @@ type Group struct {
 	getter Getter
 	// 并发缓存
 	mainCache cache
+	// 选择远程节点
+	peers PeerPicker
 }
 
 var (
@@ -80,9 +93,36 @@ func (g *Group) Get(key string) (ByteView, error) {
 	return g.load(key)
 }
 
+// 将实现了 PeerPicker 接口的 HTTPPool 注入到 Group 中
+func (g *Group) RegisterPeers(peers PeerPicker) {
+	if g.peers != nil {
+		panic("RegisterPeerPicker called more than once")
+	}
+	g.peers = peers
+}
+
 // 加载尚未缓存的内容
 func (g *Group) load(key string) (value ByteView, err error) {
+	if g.peers != nil {
+		// 从远程节点加载
+		if peer, ok := g.peers.PickPeer(key); ok {
+			if value, err = g.getFromPeer(peer, key); err == nil {
+				return value, nil
+			}
+			log.Println("[VestitaCache] Failed to get from peer", err)
+		}
+	}
+	// 本地节点加载
 	return g.getLocally(key)
+}
+
+// 使用实现了 PeerGetter 接口的 httpGetter 从访问远程节点，获取缓存值
+func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
+	bytes, err := peer.Get(g.name, key)
+	if err != nil {
+		return ByteView{}, err
+	}
+	return ByteView{b: bytes}, nil
 }
 
 // 单机加载本地内容
