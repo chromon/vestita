@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"vestita/singleflight"
 )
 
 /*
@@ -45,6 +46,8 @@ type Group struct {
 	mainCache cache
 	// 选择远程节点
 	peers PeerPicker
+	// 确保每一个 key 只被访问一次
+	loader *singleflight.Group
 }
 
 var (
@@ -65,6 +68,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		loader: &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -103,17 +107,27 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 
 // 加载尚未缓存的内容
 func (g *Group) load(key string) (value ByteView, err error) {
-	if g.peers != nil {
-		// 从远程节点加载
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err = g.getFromPeer(peer, key); err == nil {
-				return value, nil
+
+	// 使用 Do 方法确保每一个 key 只会拉取一次（本地节点和远程节点均如此）
+	viewOnce, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			// 从远程节点加载
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.getFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[VestitaCache] Failed to get from peer", err)
 			}
-			log.Println("[VestitaCache] Failed to get from peer", err)
 		}
+		// 本地节点加载
+		return g.getLocally(key)
+	})
+
+	if err == nil {
+		return viewOnce.(ByteView), nil
 	}
-	// 本地节点加载
-	return g.getLocally(key)
+
+	return
 }
 
 // 使用实现了 PeerGetter 接口的 httpGetter 从访问远程节点，获取缓存值
